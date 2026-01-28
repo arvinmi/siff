@@ -1,6 +1,6 @@
 [package]
 name = "siff"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "File browser with repomix and yek as supported parsing backends"
 authors = ["Arvin <hello@arvinmir.com>"]
