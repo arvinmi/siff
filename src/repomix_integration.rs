@@ -26,7 +26,7 @@ pub enum DownloadStatus {
 pub struct Repomix {
   /// Path to cached repomix installation
   cache_dir: PathBuf,
-  /// Specific repomix version to use (pinned for compatibility)
+  /// Specific repomix version to use (pinned)
   version: String,
   /// Path to the cached repomix entry point
   repomix_entry: PathBuf,
@@ -38,10 +38,10 @@ impl Repomix {
   /// Creates a new repomix manager instance.
   /// Sets up cache directory structure for isolated repomix installation.
   pub fn new() -> Result<Self> {
-    // pin to the v0.3.7 for repomix
-    let version = "0.3.7".to_string();
+    // pin repomix version
+    let version = "1.11.1".to_string();
 
-    // create cache dir: ~/.cache/siff/repomix/0.3.7/
+    // create cache dir: ~/.cache/siff/repomix/<version>/
     let cache_dir = dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".")).join("siff").join("repomix").join(&version);
 
     // repomix entry point will be at node_modules/repomix/bin/repomix.cjs

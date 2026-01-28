@@ -48,8 +48,9 @@ impl Yek {
     std::fs::create_dir_all(&temp_bin_dir).context("Failed to create temporary bin directory")?;
 
     // install yek to temporary directory
+    const YEK_VERSION: &str = "0.22.1";
     let output = StdCommand::new("cargo")
-      .args(["install", "yek", "--locked", "--root", temp_dir.path().to_str().unwrap(), "--quiet"])
+      .args(["install", "yek", "--version", YEK_VERSION, "--locked", "--root", temp_dir.path().to_str().unwrap(), "--quiet"])
       .output()
       .context("Failed to execute cargo install yek")?;
 
