@@ -1,8 +1,62 @@
-use crate::types::{FileNode, ScanResult};
+use std::{
+  collections::HashMap,
+  path::{Component, Path, PathBuf},
+};
+
 use anyhow::Result;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+use crate::types::{FileNode, ScanResult};
+
+// ============================================================================
+// Shared utilities
+// ============================================================================
+
+/// Validates a file path for safe processing.
+/// Returns the relative path string if valid, None if should be skipped.
+pub fn validate_file_path(file_path: &Path, root_path: &Path) -> Option<String> {
+  let relative_path = file_path.strip_prefix(root_path).ok()?;
+
+  // skip paths that try to escape
+  if relative_path.components().any(|component| matches!(component, Component::ParentDir)) {
+    let path_str = relative_path.to_string_lossy();
+    eprintln!("Warning: Skipping file with path traversal attempt: {}", path_str);
+    return None;
+  }
+
+  let path_str = relative_path.to_string_lossy();
+
+  // skip empty or dangerous paths
+  if path_str.is_empty() || path_str.starts_with('-') {
+    eprintln!("Warning: Skipping file with invalid path: {}", path_str);
+    return None;
+  }
+
+  Some(path_str.to_string())
+}
+
+/// Builds a map of directories that have selected descendants.
+pub fn build_directories_with_descendants_map(file_tree: &HashMap<PathBuf, FileNode>) -> HashMap<PathBuf, bool> {
+  let mut dir_has_selected_descendant: HashMap<PathBuf, bool> = HashMap::new();
+
+  // find all selected nodes and mark their parent directories
+  for (path, node) in file_tree {
+    if node.is_selected {
+      // mark all parent directories as having selected descendants
+      let mut current = path.parent();
+      while let Some(parent_path) = current {
+        dir_has_selected_descendant.insert(parent_path.to_path_buf(), true);
+        current = parent_path.parent();
+      }
+    }
+  }
+
+  dir_has_selected_descendant
+}
+
+// ============================================================================
+// File scanning
+// ============================================================================
 
 /// Scans a directory and builds a complete file tree.
 /// Walks through all files and dirs recursively.
@@ -55,10 +109,11 @@ fn build_parent_child_relationships(file_tree: &mut HashMap<PathBuf, FileNode>, 
       // only process if parent is within our scanned tree
       if parent_path >= root_path && file_tree.contains_key(parent_path) {
         // add path as a child of its parent (parent node)
-        if let Some(parent_node) = file_tree.get_mut(parent_path) {
-          if parent_node.is_directory && !parent_node.children.contains(&path) {
-            parent_node.children.push(path.clone());
-          }
+        if let Some(parent_node) = file_tree.get_mut(parent_path)
+          && parent_node.is_directory
+          && !parent_node.children.contains(&path)
+        {
+          parent_node.children.push(path.clone());
         }
       }
     }
@@ -67,7 +122,8 @@ fn build_parent_child_relationships(file_tree: &mut HashMap<PathBuf, FileNode>, 
   // sort children for consistent display order
   // dirs first, then files, both alphabetically
   // need to collect the paths first to avoid borrowing issues
-  let directory_paths: Vec<PathBuf> = file_tree.iter().filter(|(_, node)| node.is_directory).map(|(path, _)| path.clone()).collect();
+  let directory_paths: Vec<PathBuf> =
+    file_tree.iter().filter(|(_, node)| node.is_directory).map(|(path, _)| path.clone()).collect();
 
   for dir_path in directory_paths {
     if let Some(node) = file_tree.get_mut(&dir_path) {
@@ -145,10 +201,10 @@ fn should_skip_file(path: &Path) -> bool {
   }
 
   // skip very large files that are likely binary or large data files (>100MB)
-  if let Ok(metadata) = path.metadata() {
-    if metadata.len() > 100_000_000 {
-      return true;
-    }
+  if let Ok(metadata) = path.metadata()
+    && metadata.len() > 100_000_000
+  {
+    return true;
   }
 
   false
@@ -162,13 +218,14 @@ pub fn flatten_visible_tree(file_tree: &HashMap<PathBuf, FileNode>, root_path: &
 
   // start with the root dir's children instead of the root itself
   // creates a rootless tree view
-  if let Some(root_node) = file_tree.get(root_path) {
-    if root_node.is_directory && root_node.is_expanded {
-      // add each child of the root directory
-      for child_path in &root_node.children {
-        if let Some(child_node) = file_tree.get(child_path) {
-          flatten_node_recursive(file_tree, child_node, &mut visible_paths);
-        }
+  if let Some(root_node) = file_tree.get(root_path)
+    && root_node.is_directory
+    && root_node.is_expanded
+  {
+    // add each child of the root directory
+    for child_path in &root_node.children {
+      if let Some(child_node) = file_tree.get(child_path) {
+        flatten_node_recursive(file_tree, child_node, &mut visible_paths);
       }
     }
   }
@@ -210,7 +267,11 @@ fn is_text_file(path: &Path) -> bool {
 
   // skip repomix output files to avoid circular references
   // TODO: remove this, if can handle circular references and tested it
-  if file_name.starts_with("repomix-output") || file_name.ends_with("-repomix.txt") || file_name.ends_with("-repomix.md") || file_name.ends_with("-repomix.xml") {
+  if file_name.starts_with("repomix-output")
+    || file_name.ends_with("-repomix.txt")
+    || file_name.ends_with("-repomix.md")
+    || file_name.ends_with("-repomix.xml")
+  {
     return false;
   }
 
@@ -274,34 +335,9 @@ fn is_text_file(path: &Path) -> bool {
 /// Toggles selection of a file or directory.
 /// For dirs, recursively selects/deselects all children.
 pub fn toggle_selection_recursive(file_tree: &mut HashMap<PathBuf, FileNode>, path: &Path) -> Result<()> {
-  if let Some(node) = file_tree.get_mut(path) {
+  if let Some(node) = file_tree.get(path) {
     let new_selection_state = !node.is_selected;
-    node.is_selected = new_selection_state;
-
-    // if is a dir, apply the same selection to all children
-    if node.is_directory {
-      let children = node.children.clone();
-      for child_path in children {
-        toggle_selection_recursive_helper(file_tree, &child_path, new_selection_state)?;
-      }
-    }
-  }
-
-  Ok(())
-}
-
-/// Helper function for recursive selection toggling.
-/// Applies the given selection state to a node and all its descendants.
-fn toggle_selection_recursive_helper(file_tree: &mut HashMap<PathBuf, FileNode>, path: &Path, selection_state: bool) -> Result<()> {
-  if let Some(node) = file_tree.get_mut(path) {
-    node.is_selected = selection_state;
-
-    if node.is_directory {
-      let children = node.children.clone();
-      for child_path in children {
-        toggle_selection_recursive_helper(file_tree, &child_path, selection_state)?;
-      }
-    }
+    set_selection_recursive(file_tree, path, new_selection_state)?;
   }
 
   Ok(())
@@ -335,10 +371,10 @@ pub fn select_all_visible_files(file_tree: &mut HashMap<PathBuf, FileNode>, visi
 
   // select each visible item and all its contents
   for path in visible_files {
-    if let Some(node) = file_tree.get(path) {
-      if !node.is_selected {
-        set_selection_recursive(file_tree, path, true)?;
-      }
+    if let Some(node) = file_tree.get(path)
+      && !node.is_selected
+    {
+      set_selection_recursive(file_tree, path, true)?;
     }
   }
 
@@ -347,15 +383,17 @@ pub fn select_all_visible_files(file_tree: &mut HashMap<PathBuf, FileNode>, visi
 
 /// Sets the selection state of a file or directory recursively.
 /// For directories, apply the same selection state to all children.
-fn set_selection_recursive(file_tree: &mut HashMap<PathBuf, FileNode>, path: &Path, selection_state: bool) -> Result<()> {
-  if let Some(node) = file_tree.get_mut(path) {
-    node.is_selected = selection_state;
-
-    // if is a directory, apply the same selection to all children
-    if node.is_directory {
-      let children = node.children.clone();
-      for child_path in children {
-        set_selection_recursive(file_tree, &child_path, selection_state)?;
+fn set_selection_recursive(
+  file_tree: &mut HashMap<PathBuf, FileNode>,
+  path: &Path,
+  selection_state: bool,
+) -> Result<()> {
+  let mut stack = vec![path.to_path_buf()];
+  while let Some(current) = stack.pop() {
+    if let Some(node) = file_tree.get_mut(&current) {
+      node.is_selected = selection_state;
+      if node.is_directory {
+        stack.extend(node.children.iter().cloned());
       }
     }
   }
@@ -382,34 +420,34 @@ pub fn generate_file_tree_text(file_tree: &HashMap<PathBuf, FileNode>, root_path
   result.push_str(&format!("{}/\n", root_name));
 
   // get root node and generate tree from its children
-  if let Some(root_node) = file_tree.get(root_path) {
-    if root_node.is_directory {
-      // collect and sort children for consistent output
-      let mut children: Vec<&PathBuf> = root_node.children.iter().collect();
-      children.sort_by(|a, b| {
-        let a_name = a.file_name().unwrap_or_default();
-        let b_name = b.file_name().unwrap_or_default();
+  if let Some(root_node) = file_tree.get(root_path)
+    && root_node.is_directory
+  {
+    // collect and sort children for consistent output
+    let mut children: Vec<&PathBuf> = root_node.children.iter().collect();
+    children.sort_by(|a, b| {
+      let a_name = a.file_name().unwrap_or_default();
+      let b_name = b.file_name().unwrap_or_default();
 
-        // get node types for sorting (directories first)
-        let a_is_dir = file_tree.get(*a).map(|n| n.is_directory).unwrap_or(false);
-        let b_is_dir = file_tree.get(*b).map(|n| n.is_directory).unwrap_or(false);
+      // get node types for sorting (directories first)
+      let a_is_dir = file_tree.get(*a).map(|n| n.is_directory).unwrap_or(false);
+      let b_is_dir = file_tree.get(*b).map(|n| n.is_directory).unwrap_or(false);
 
-        match (a_is_dir, b_is_dir) {
-          // directories first
-          (true, false) => std::cmp::Ordering::Less,
-          // files second
-          (false, true) => std::cmp::Ordering::Greater,
-          // alphabetical within same type
-          _ => a_name.cmp(b_name),
-        }
-      });
+      match (a_is_dir, b_is_dir) {
+        // directories first
+        (true, false) => std::cmp::Ordering::Less,
+        // files second
+        (false, true) => std::cmp::Ordering::Greater,
+        // alphabetical within same type
+        _ => a_name.cmp(b_name),
+      }
+    });
 
-      // generate tree structure for each child
-      for (index, child_path) in children.iter().enumerate() {
-        let is_last = index == children.len() - 1;
-        if let Some(child_node) = file_tree.get(*child_path) {
-          generate_tree_node_recursive(file_tree, child_node, &mut result, "", is_last);
-        }
+    // generate tree structure for each child
+    for (index, child_path) in children.iter().enumerate() {
+      let is_last = index == children.len() - 1;
+      if let Some(child_node) = file_tree.get(*child_path) {
+        generate_tree_node_recursive(file_tree, child_node, &mut result, "", is_last);
       }
     }
   }
@@ -419,7 +457,13 @@ pub fn generate_file_tree_text(file_tree: &HashMap<PathBuf, FileNode>, root_path
 
 /// Recursively creates tree structure for a single node and its children.
 /// Uses box-drawing characters for a clean tree appearance.
-fn generate_tree_node_recursive(file_tree: &HashMap<PathBuf, FileNode>, node: &FileNode, result: &mut String, prefix: &str, is_last: bool) {
+fn generate_tree_node_recursive(
+  file_tree: &HashMap<PathBuf, FileNode>,
+  node: &FileNode,
+  result: &mut String,
+  prefix: &str,
+  is_last: bool,
+) {
   // choose the appropriate tree characters
   let connector = if is_last { "└── " } else { "├── " };
   let extension = if is_last { "    " } else { "│   " };
@@ -467,9 +511,11 @@ fn generate_tree_node_recursive(file_tree: &HashMap<PathBuf, FileNode>, node: &F
 // TODO: move tests to main testing file
 #[cfg(test)]
 mod tests {
-  use super::*;
   use std::fs;
+
   use tempfile::TempDir;
+
+  use super::*;
 
   #[test]
   fn test_scan_directory() {

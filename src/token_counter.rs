@@ -1,8 +1,11 @@
+use std::{
+  collections::HashMap,
+  path::{Path, PathBuf},
+  sync::{Arc, OnceLock},
+};
+
 use anyhow::{Context, Result};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-use tiktoken_rs::{o200k_base, CoreBPE};
+use tiktoken_rs::{CoreBPE, o200k_base};
 use tokio::sync::{Mutex, OnceCell, Semaphore};
 
 // global shared encoder pool to avoid expensive recreation
@@ -44,9 +47,7 @@ pub struct TokenCounter {
 impl TokenCounter {
   /// Creates a new token counter with shared cache.
   pub fn new() -> Result<Self> {
-    Ok(Self {
-      file_token_cache: Arc::new(Mutex::new(HashMap::new())),
-    })
+    Ok(Self { file_token_cache: Arc::new(Mutex::new(HashMap::new())) })
   }
 
   /// Creates a token counter that shares cache with another instance.

@@ -1,7 +1,7 @@
 [package]
 name = "siff"
 version = "0.1.1"
-edition = "2021"
+edition = "2024"
 description = "File browser with repomix and yek as supported parsing backends"
 authors = ["Arvin <hello@arvinmir.com>"]
 license = "MIT"
@@ -11,21 +11,21 @@ keywords = ["serialization", "parsing", "tui", "git"]
 categories = ["parsing", "filesystem", "development-tools", "command-line-utilities"]
 
 [dependencies]
-ratatui = "0.24"
-crossterm = "0.27"
-tokio = { version = "1.0", features = ["full"] }
+ratatui = "0.30"
+crossterm = "0.29"
+tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-walkdir = "2.4"
-clap = { version = "4.4", features = ["derive"] }
-anyhow = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-dirs = "5.0"
-tiktoken-rs = "0.5"
-tempfile = "3.8"
+walkdir = "2"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+tiktoken-rs = "0.9"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3.8"
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

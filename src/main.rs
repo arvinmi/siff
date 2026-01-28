@@ -1,4 +1,5 @@
 mod app;
+mod clipboard;
 mod config;
 mod file_utils;
 mod repomix_integration;
@@ -7,9 +8,10 @@ mod types;
 mod ui;
 mod yek_integration;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::Parser;
-use std::path::PathBuf;
 
 /// Main siff entry point
 #[derive(Parser)]
@@ -57,7 +59,8 @@ async fn main() -> Result<()> {
   };
 
   // determine the directory to scan
-  let target_directory = cli.directory.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+  let target_directory =
+    cli.directory.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
   // validate that the dir exists
   if !target_directory.exists() {
@@ -140,19 +143,6 @@ async fn check_backend_availability(backend: &types::Backend) -> Result<()> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use tempfile::TempDir;
-
-  #[tokio::test]
-  async fn test_directory_validation() {
-    // test with non-existent directory
-    let non_existent = PathBuf::from("/this/path/does/not/exist");
-    assert!(!non_existent.exists());
-
-    // test with temporary dir
-    let temp_dir = TempDir::new().unwrap();
-    assert!(temp_dir.path().exists());
-    assert!(temp_dir.path().is_dir());
-  }
 
   #[test]
   fn test_cli_parsing() {

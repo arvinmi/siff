@@ -1,6 +1,6 @@
+use std::{collections::HashMap, path::PathBuf};
+
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
 /// Backend options for file processing.
@@ -112,6 +112,10 @@ pub struct AppState {
   pub repomix_options: RepomixOptions,
   /// Individual token counts for each file and directory
   pub individual_token_counts: HashMap<PathBuf, Option<usize>>,
+  /// Cached map of directories that have selected descendants
+  pub dir_descendants_map: HashMap<PathBuf, bool>,
+  /// Whether cached descendant map needs a rebuild
+  pub dir_descendants_dirty: bool,
   /// Current status message to display to user
   pub status_message: String,
   /// Whether the app is currently processing files
@@ -146,15 +150,7 @@ impl FileNode {
   pub fn new(path: PathBuf, is_directory: bool, depth: usize) -> Self {
     let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-    Self {
-      path,
-      name,
-      is_directory,
-      is_selected: false,
-      is_expanded: false,
-      children: Vec::new(),
-      depth,
-    }
+    Self { path, name, is_directory, is_selected: false, is_expanded: false, children: Vec::new(), depth }
   }
 
   /// Toggles the expanded state of a directory.

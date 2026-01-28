@@ -1,8 +1,12 @@
-use crate::types::RepomixOptions;
+use std::{
+  collections::HashMap,
+  path::{Path, PathBuf},
+};
+
 use anyhow::{Context, Result};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use tokio::process::Command;
+
+use crate::types::RepomixOptions;
 
 /// Download status for repomix.
 #[derive(Debug, Clone)]
@@ -46,12 +50,7 @@ impl Repomix {
     // check if repomix is already cached
     let download_status = if repomix_entry.exists() { DownloadStatus::Ready } else { DownloadStatus::NotStarted };
 
-    Ok(Self {
-      cache_dir,
-      version,
-      repomix_entry,
-      download_status,
-    })
+    Ok(Self { cache_dir, version, repomix_entry, download_status })
   }
 
   /// Gets the current download status.
@@ -196,7 +195,13 @@ impl Repomix {
 
   /// Runs repomix with complete isolation and siff only configuration.
   /// Main entry point that replaces the old repomix runner.
-  pub async fn run_isolated_repomix(&mut self, selected_files: &[PathBuf], options: &RepomixOptions, working_directory: &Path, file_tree: &std::collections::HashMap<PathBuf, crate::types::FileNode>) -> Result<String> {
+  pub async fn run_isolated_repomix(
+    &mut self,
+    selected_files: &[PathBuf],
+    options: &RepomixOptions,
+    working_directory: &Path,
+    file_tree: &std::collections::HashMap<PathBuf, crate::types::FileNode>,
+  ) -> Result<String> {
     if selected_files.is_empty() {
       return Err(anyhow::anyhow!("No files selected for processing"));
     }
@@ -235,7 +240,11 @@ impl Repomix {
         "Command failed with no error output".to_string()
       };
 
-      return Err(anyhow::anyhow!("Repomix failed with exit code {}: {}", output.status.code().unwrap_or(-1), error_msg));
+      return Err(anyhow::anyhow!(
+        "Repomix failed with exit code {}: {}",
+        output.status.code().unwrap_or(-1),
+        error_msg
+      ));
     }
 
     // read the output file
@@ -277,7 +286,12 @@ impl Repomix {
   }
 
   /// Builds command arguments with complete siff control and no config interference.
-  fn build_isolated_args(&self, selected_files: &[PathBuf], options: &RepomixOptions, working_directory: &Path) -> Result<Vec<String>> {
+  fn build_isolated_args(
+    &self,
+    selected_files: &[PathBuf],
+    options: &RepomixOptions,
+    working_directory: &Path,
+  ) -> Result<Vec<String>> {
     let mut args = vec![
       "--no-gitignore".to_string(),
       "--no-default-patterns".to_string(),
@@ -316,39 +330,16 @@ impl Repomix {
       // for smaller file counts, use the direct include approach
       let mut valid_files = Vec::new();
 
-      // convert selected files to relative paths with proper validation and escaping
+      // convert selected files to relative paths with proper validation
       for file_path in selected_files {
-        // validate that the file path is within the working directory
-        let relative_path = match file_path.strip_prefix(working_directory) {
-          Ok(rel_path) => rel_path,
-          Err(_) => {
-            eprintln!("Warning: Skipping file outside working directory: {}", file_path.display());
+        if let Some(path_str) = crate::file_utils::validate_file_path(file_path, working_directory) {
+          // extra check: skip files with commas (comma is separator in --include)
+          if path_str.contains(',') {
+            eprintln!("Warning: Skipping file with comma in filename (security): {}", path_str);
             continue;
           }
-        };
-
-        // convert to string and validate it doesn't contain dangerous characters
-        let path_str = relative_path.to_string_lossy();
-
-        // validation for path that doesn't try to escape the working directory
-        if path_str.contains("..") {
-          eprintln!("Warning: Skipping file with path traversal attempt: {}", path_str);
-          continue;
+          valid_files.push(path_str);
         }
-
-        // path is not empty and doesn't start with dangerous characters
-        if path_str.is_empty() || path_str.starts_with('-') {
-          eprintln!("Warning: Skipping file with invalid path: {}", path_str);
-          continue;
-        }
-
-        // skip files with commas in names to prevent command injection (comma is used as separator in --include)
-        if path_str.contains(',') {
-          eprintln!("Warning: Skipping file with comma in filename (security): {}", path_str);
-          continue;
-        }
-
-        valid_files.push(path_str.to_string());
       }
 
       // make sure have files to process after validation
@@ -464,53 +455,9 @@ impl Repomix {
     common_node_paths.join(if cfg!(windows) { ";" } else { ":" })
   }
 
-  /// Copies content to clipboard using platform-specific commands.
+  /// Copies content to clipboard using shared clipboard utility.
   async fn copy_to_clipboard(&self, content: &str) -> Result<()> {
-    let clipboard_cmd = if cfg!(target_os = "macos") {
-      vec!["pbcopy"]
-    } else if cfg!(target_os = "linux") {
-      // try xclip first, then xsel as fallback (for linux)
-      if Command::new("which").arg("xclip").output().await.is_ok() {
-        vec!["xclip", "-selection", "clipboard"]
-      } else if Command::new("which").arg("xsel").output().await.is_ok() {
-        vec!["xsel", "--clipboard", "--input"]
-      } else {
-        return Err(anyhow::anyhow!("No clipboard utility found. Please install xclip or xsel"));
-      }
-    } else if cfg!(target_os = "windows") {
-      vec!["clip"]
-    } else {
-      return Err(anyhow::anyhow!("Unsupported platform for clipboard operations"));
-    };
-
-    let mut cmd = Command::new(clipboard_cmd[0]);
-    for arg in &clipboard_cmd[1..] {
-      cmd.arg(arg);
-    }
-
-    let mut child = cmd
-      .stdin(std::process::Stdio::piped())
-      .stdout(std::process::Stdio::piped())
-      .stderr(std::process::Stdio::piped())
-      .spawn()
-      .context("Failed to spawn clipboard command")?;
-
-    // write content to stdin
-    if let Some(stdin) = child.stdin.take() {
-      use tokio::io::AsyncWriteExt;
-      let mut stdin = stdin;
-      stdin.write_all(content.as_bytes()).await.context("Failed to write to clipboard command stdin")?;
-      stdin.shutdown().await.context("Failed to close clipboard command stdin")?;
-    }
-
-    // wait for command to complete
-    let output = child.wait_with_output().await.context("Failed to wait for clipboard command")?;
-
-    if !output.status.success() {
-      let stderr = String::from_utf8_lossy(&output.stderr);
-      return Err(anyhow::anyhow!("Clipboard command failed: {}", stderr));
-    }
-
+    crate::clipboard::copy_to_clipboard(content).await?;
     Ok(())
   }
 

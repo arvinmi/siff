@@ -1,7 +1,8 @@
 pub mod file_tree;
 
+use ratatui::{Frame, widgets::ListState};
+
 use crate::types::{AppState, Focus};
-use ratatui::{widgets::ListState, Frame};
 
 /// Main UI state that holds all component states.
 #[derive(Default)]
@@ -13,7 +14,14 @@ pub struct UIState {
 /// Main entry point for all UI rendering.
 pub fn render_app(terminal_frame: &mut Frame, app_state: &AppState, ui_state: &mut UIState) {
   // use the original integrated layout that shows config and file tree
-  file_tree::render_file_tree_with_options(terminal_frame, terminal_frame.size(), app_state, &mut ui_state.file_tree_list_state, app_state.token_count, &app_state.status_message);
+  file_tree::render_file_tree_with_options(
+    terminal_frame,
+    terminal_frame.area(),
+    app_state,
+    &mut ui_state.file_tree_list_state,
+    app_state.token_count,
+    &app_state.status_message,
+  );
 }
 
 /// Handles keyboard input for the entire app.

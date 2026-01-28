@@ -1,24 +1,30 @@
-use crate::config::SifConfig;
-use crate::file_utils;
-use crate::repomix_integration::Repomix;
-use crate::token_counter::TokenCounter;
-use crate::types::{AppState, Backend, BackendRequest, BackendResult, RepomixOptions};
-use crate::ui::{handle_input, render_app, update_ui_state, UIState};
-use crate::yek_integration::Yek;
+use std::{
+  collections::HashMap,
+  io,
+  path::{Path, PathBuf},
+  sync::Arc,
+  time::{Duration, Instant},
+};
+
 use anyhow::{Context, Result};
 use crossterm::{
   event::{self, Event, KeyCode, MouseEvent},
   execute,
-  terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen},
+  terminal::{EnterAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
-use std::collections::HashMap;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, Mutex};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
+
+use crate::{
+  config::SifConfig,
+  file_utils,
+  repomix_integration::Repomix,
+  token_counter::TokenCounter,
+  types::{AppState, Backend, BackendRequest, BackendResult, RepomixOptions},
+  ui::{UIState, handle_input, render_app, update_ui_state},
+  yek_integration::Yek,
+};
 
 /// Main app struct that manages the entire siff app.
 /// Coordinates between the UI, file system, and backend
@@ -104,6 +110,8 @@ impl App {
       selected_index: 0,
       repomix_options,
       individual_token_counts: HashMap::new(),
+      dir_descendants_map: HashMap::new(),
+      dir_descendants_dirty: true,
       status_message: String::new(),
       is_processing: false,
       token_count: 0,
@@ -137,7 +145,8 @@ impl App {
     // spawn background backend execution task with lazy init
     let current_backend_for_task = effective_backend.clone();
     tokio::spawn(async move {
-      Self::backend_execution_task_lazy(current_backend_for_task, backend_request_receiver, backend_result_sender).await;
+      Self::backend_execution_task_lazy(current_backend_for_task, backend_request_receiver, backend_result_sender)
+        .await;
     });
 
     Ok(Self {
@@ -265,15 +274,16 @@ impl App {
     let dir_descendants_map = self.build_directories_with_descendants_map();
 
     // clear all directory token counts first
-    let directory_paths: Vec<PathBuf> = self.state.file_tree.iter().filter(|(_, node)| node.is_directory).map(|(path, _)| path.clone()).collect();
+    let directory_paths: Vec<PathBuf> =
+      self.state.file_tree.iter().filter(|(_, node)| node.is_directory).map(|(path, _)| path.clone()).collect();
 
     // reset all directory counts to 0
     for dir_path in &directory_paths {
       // include directories that are selected or have selected descendants
-      if let Some(dir_node) = self.state.file_tree.get(dir_path) {
-        if dir_node.is_selected || *dir_descendants_map.get(dir_path).unwrap_or(&false) {
-          self.state.individual_token_counts.insert(dir_path.clone(), Some(0));
-        }
+      if let Some(dir_node) = self.state.file_tree.get(dir_path)
+        && (dir_node.is_selected || *dir_descendants_map.get(dir_path).unwrap_or(&false))
+      {
+        self.state.individual_token_counts.insert(dir_path.clone(), Some(0));
       }
     }
 
@@ -281,11 +291,12 @@ impl App {
     for (file_path, token_count_opt) in &self.state.individual_token_counts.clone() {
       if let Some(token_count) = token_count_opt {
         // check if file is actually selected
-        if let Some(file_node) = self.state.file_tree.get(file_path) {
-          if file_node.is_selected && !file_node.is_directory {
-            // find if file is selected, add its tokens to all parent directories that should show counts
-            self.add_file_tokens_to_directories_with_selections(file_path, *token_count, &dir_descendants_map);
-          }
+        if let Some(file_node) = self.state.file_tree.get(file_path)
+          && file_node.is_selected
+          && !file_node.is_directory
+        {
+          // find if file is selected, add its tokens to all parent directories that should show counts
+          self.add_file_tokens_to_directories_with_selections(file_path, *token_count, &dir_descendants_map);
         }
       }
     }
@@ -293,16 +304,22 @@ impl App {
 
   /// Adds a file's token count to parent directories that should show token counts.
   /// Includes both selected directories and directories with selected descendants.
-  fn add_file_tokens_to_directories_with_selections(&mut self, file_path: &Path, file_tokens: usize, dir_descendants_map: &HashMap<PathBuf, bool>) {
+  fn add_file_tokens_to_directories_with_selections(
+    &mut self,
+    file_path: &Path,
+    file_tokens: usize,
+    dir_descendants_map: &HashMap<PathBuf, bool>,
+  ) {
     let mut current_path = file_path.parent();
     while let Some(parent_path) = current_path {
-      if let Some(parent_node) = self.state.file_tree.get(parent_path) {
-        if parent_node.is_directory {
-          // add tokens if directory is selected or has selected descendants
-          if parent_node.is_selected || *dir_descendants_map.get(parent_path).unwrap_or(&false) {
-            let current_dir_tokens = self.state.individual_token_counts.get(parent_path).and_then(|opt| *opt).unwrap_or(0);
-            self.state.individual_token_counts.insert(parent_path.to_path_buf(), Some(current_dir_tokens + file_tokens));
-          }
+      if let Some(parent_node) = self.state.file_tree.get(parent_path)
+        && parent_node.is_directory
+      {
+        // add tokens if directory is selected or has selected descendants
+        if parent_node.is_selected || *dir_descendants_map.get(parent_path).unwrap_or(&false) {
+          let current_dir_tokens =
+            self.state.individual_token_counts.get(parent_path).and_then(|opt| *opt).unwrap_or(0);
+          self.state.individual_token_counts.insert(parent_path.to_path_buf(), Some(current_dir_tokens + file_tokens));
         }
       }
       current_path = parent_path.parent();
@@ -311,30 +328,7 @@ impl App {
 
   /// Builds a map of directories that have selected descendants.
   fn build_directories_with_descendants_map(&self) -> HashMap<PathBuf, bool> {
-    let mut dir_map = HashMap::new();
-
-    // initialize all directories as false
-    for (path, node) in &self.state.file_tree {
-      if node.is_directory {
-        dir_map.insert(path.clone(), false);
-      }
-    }
-
-    // mark directories that have selected descendants
-    for (path, node) in &self.state.file_tree {
-      if node.is_selected {
-        // mark all parent directories as having selected descendants
-        let mut current_path = path.parent();
-        while let Some(parent_path) = current_path {
-          if let Some(has_descendants) = dir_map.get_mut(parent_path) {
-            *has_descendants = true;
-          }
-          current_path = parent_path.parent();
-        }
-      }
-    }
-
-    dir_map
+    file_utils::build_directories_with_descendants_map(&self.state.file_tree)
   }
 
   /// Queues individual token calculations for background processing with batching.
@@ -446,7 +440,9 @@ impl App {
       .state
       .file_tree
       .iter()
-      .filter(|(path, node)| node.is_directory && (node.is_selected || *dir_descendants_map.get(*path).unwrap_or(&false)))
+      .filter(|(path, node)| {
+        node.is_directory && (node.is_selected || *dir_descendants_map.get(*path).unwrap_or(&false))
+      })
       .map(|(path, _)| path.clone())
       .collect();
 
@@ -557,7 +553,11 @@ impl App {
       // handle the result
       if result.success {
         // successful execution
-        let message = if result.message.len() > 100 { format!("{}...", &result.message[..100]) } else { result.message.to_string() };
+        let message = if result.message.len() > 100 {
+          format!("{}...", &result.message[..100])
+        } else {
+          result.message.to_string()
+        };
         self.set_status_message(message);
 
         // if an output file was created, print it
@@ -589,9 +589,11 @@ impl App {
       self.sync_app_state();
 
       // render the UI
-      terminal.draw(|frame| {
-        render_app(frame, &self.state, &mut self.ui_state);
-      })?;
+      terminal
+        .draw(|frame| {
+          render_app(frame, &self.state, &mut self.ui_state);
+        })
+        .map_err(|e| anyhow::anyhow!("draw error: {}", e))?;
 
       // update UI state to match app state
       update_ui_state(&self.state, &mut self.ui_state);
@@ -619,13 +621,12 @@ impl App {
       self.periodic_update();
 
       // update background repomix download if needed
-      if matches!(self.state.repomix_options.backend, Backend::Repomix) {
-        if let Ok(status_changed) = self.update_repomix_download().await {
-          if status_changed {
-            // status changed, update UI
-            continue;
-          }
-        }
+      if matches!(self.state.repomix_options.backend, Backend::Repomix)
+        && let Ok(status_changed) = self.update_repomix_download().await
+        && status_changed
+      {
+        // status changed, update UI
+        continue;
       }
 
       // process token calculation results
@@ -673,7 +674,10 @@ impl App {
         if let Err(e) = self.save_repomix_options() {
           self.set_status_message(format!("Error: config save error {}", e));
         } else {
-          self.set_status_message(format!("Compress: {}", if self.state.repomix_options.compress { "enabled" } else { "disabled" }));
+          self.set_status_message(format!(
+            "Compress: {}",
+            if self.state.repomix_options.compress { "enabled" } else { "disabled" }
+          ));
         }
         return Ok(true);
       }
@@ -683,7 +687,10 @@ impl App {
         if let Err(e) = self.save_repomix_options() {
           self.set_status_message(format!("Error: config save error {}", e));
         } else {
-          self.set_status_message(format!("Remove comments: {}", if self.state.repomix_options.remove_comments { "enabled" } else { "disabled" }));
+          self.set_status_message(format!(
+            "Remove comments: {}",
+            if self.state.repomix_options.remove_comments { "enabled" } else { "disabled" }
+          ));
         }
         return Ok(true);
       }
@@ -698,7 +705,8 @@ impl App {
         if let Err(e) = self.save_repomix_options() {
           self.set_status_message(format!("Error: config save error {}", e));
         } else {
-          self.set_status_message(format!("Output format: {}", self.state.repomix_options.output_format.display_name()));
+          self
+            .set_status_message(format!("Output format: {}", self.state.repomix_options.output_format.display_name()));
         }
         return Ok(true);
       }
@@ -708,7 +716,10 @@ impl App {
         if let Err(e) = self.save_repomix_options() {
           self.set_status_message(format!("Error: config save error {}", e));
         } else {
-          self.set_status_message(format!("File tree: {}", if self.state.repomix_options.file_tree { "enabled" } else { "disabled" }));
+          self.set_status_message(format!(
+            "File tree: {}",
+            if self.state.repomix_options.file_tree { "enabled" } else { "disabled" }
+          ));
         }
         return Ok(true);
       }
@@ -716,7 +727,8 @@ impl App {
       KeyCode::Char('E') => {
         // expand all directories
         crate::file_utils::expand_all_directories(&mut self.state.file_tree);
-        self.state.visible_paths = crate::file_utils::flatten_visible_tree(&self.state.file_tree, &self.state.root_path);
+        self.state.visible_paths =
+          crate::file_utils::flatten_visible_tree(&self.state.file_tree, &self.state.root_path);
         self.set_status_message("Expanded all directories".to_string());
         return Ok(true);
       }
@@ -727,7 +739,8 @@ impl App {
         if let Some(root_node) = self.state.file_tree.get_mut(&self.state.root_path) {
           root_node.is_expanded = true;
         }
-        self.state.visible_paths = crate::file_utils::flatten_visible_tree(&self.state.file_tree, &self.state.root_path);
+        self.state.visible_paths =
+          crate::file_utils::flatten_visible_tree(&self.state.file_tree, &self.state.root_path);
         self.set_status_message("Collapsed all directories".to_string());
         return Ok(true);
       }
@@ -735,6 +748,7 @@ impl App {
         // select all visible items (files and directories)
         match crate::file_utils::select_all_visible_files(&mut self.state.file_tree, &self.state.visible_paths) {
           Ok(()) => {
+            self.state.dir_descendants_dirty = true;
             // clear token cache
             self.state.individual_token_counts.clear();
             self.pending_token_calculations.clear();
@@ -757,6 +771,7 @@ impl App {
       KeyCode::Char('U') => {
         // unselect all items
         crate::file_utils::unselect_all_items(&mut self.state.file_tree);
+        self.state.dir_descendants_dirty = true;
         // clear token cache
         self.state.individual_token_counts.clear();
         self.pending_token_calculations.clear();
@@ -780,6 +795,7 @@ impl App {
         KeyCode::Char(' ') => {
           // space key toggles selection, so update token count
           self.suppress_status_messages = false;
+          self.state.dir_descendants_dirty = true;
           self.update_token_count_debounced()?;
         }
         KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Left | KeyCode::Right => {
@@ -848,47 +864,55 @@ impl App {
   /// and performing the corresponding action (selection, expansion).
   async fn handle_mouse_click(&mut self, column: u16, row: u16) -> Result<()> {
     // check if click is in the file tree area
-    if let Some(clicked_file_index) = self.calculate_clicked_file_index(row) {
-      if clicked_file_index < self.state.visible_paths.len() {
-        // update selection to clicked item
-        self.state.selected_index = clicked_file_index;
+    if let Some(clicked_file_index) = self.calculate_clicked_file_index(row)
+      && clicked_file_index < self.state.visible_paths.len()
+    {
+      // update selection to clicked item
+      self.state.selected_index = clicked_file_index;
 
-        // get the clicked path
-        if let Some(clicked_path) = self.state.visible_paths.get(clicked_file_index) {
-          let clicked_path = clicked_path.clone();
+      // get the clicked path
+      if let Some(clicked_path) = self.state.visible_paths.get(clicked_file_index) {
+        let clicked_path = clicked_path.clone();
 
-          // determine action based on click position and file type
-          if let Some(node) = self.state.file_tree.get(&clicked_path) {
-            if node.is_directory {
-              // for directories, check if click was on expansion icon or name
-              // adjust depth for rootless tree view
-              let display_depth = node.depth.saturating_sub(1);
-              let indent_width = display_depth * 2; // 2 spaces per depth level
-              let icon_start = indent_width;
-              let icon_end = icon_start + 3; // "[+]" or "[-]" is 3 characters
+        // determine action based on click position and file type
+        if let Some(node) = self.state.file_tree.get(&clicked_path) {
+          let mut selection_changed = false;
+          if node.is_directory {
+            // for directories, check if click was on expansion icon or name
+            // adjust depth for rootless tree view
+            let display_depth = node.depth.saturating_sub(1);
+            let indent_width = display_depth * 2; // 2 spaces per depth level
+            let icon_start = indent_width;
+            let icon_end = icon_start + 3; // "[+]" or "[-]" is 3 characters
 
-              if column as usize >= icon_start && column as usize <= icon_end + 1 {
-                // clicked on expansion icon, then toggle expansion
-                if let Some(node_mut) = self.state.file_tree.get_mut(&clicked_path) {
-                  node_mut.toggle_expansion();
-                  self.update_visible_files();
-                }
-              } else {
-                // clicked on directory name, then toggle selection
-                if crate::file_utils::toggle_selection_recursive(&mut self.state.file_tree, &clicked_path).is_err() {
-                  // silently handle errors
-                }
+            if column as usize >= icon_start && column as usize <= icon_end + 1 {
+              // clicked on expansion icon, then toggle expansion
+              if let Some(node_mut) = self.state.file_tree.get_mut(&clicked_path) {
+                node_mut.toggle_expansion();
+                self.update_visible_files();
               }
             } else {
-              // for files, toggle selection
+              // clicked on directory name, then toggle selection
               if crate::file_utils::toggle_selection_recursive(&mut self.state.file_tree, &clicked_path).is_err() {
                 // silently handle errors
+              } else {
+                selection_changed = true;
               }
             }
-
-            // update token count
-            self.update_token_count_debounced()?;
+          } else {
+            // for files, toggle selection
+            if crate::file_utils::toggle_selection_recursive(&mut self.state.file_tree, &clicked_path).is_err() {
+              // silently handle errors
+            } else {
+              selection_changed = true;
+            }
           }
+
+          // update token count
+          if selection_changed {
+            self.state.dir_descendants_dirty = true;
+          }
+          self.update_token_count_debounced()?;
         }
       }
     }
@@ -913,11 +937,7 @@ impl App {
     let file_row = (row - file_list_start_row) as usize;
 
     // check if have enough files and the click is within bounds
-    if file_row < self.state.visible_paths.len() {
-      Some(file_row)
-    } else {
-      None
-    }
+    if file_row < self.state.visible_paths.len() { Some(file_row) } else { None }
   }
 
   /// Updates the visible files list after expansion changes.
@@ -942,7 +962,9 @@ impl App {
 
     // validate options based on backend
     let warnings = match self.state.repomix_options.backend {
-      crate::types::Backend::Repomix => crate::repomix_integration::validate_isolated_repomix_options(&self.state.repomix_options, &selected_files),
+      crate::types::Backend::Repomix => {
+        crate::repomix_integration::validate_isolated_repomix_options(&self.state.repomix_options, &selected_files)
+      }
       crate::types::Backend::Yek => crate::yek_integration::validate_yek_options(&selected_files),
     };
 
@@ -1062,11 +1084,12 @@ impl App {
 
   /// Expands the root directory to show initial files.
   pub fn expand_root(&mut self) {
-    if let Some(root_node) = self.state.file_tree.get_mut(&self.state.root_path) {
-      if root_node.is_directory && !root_node.is_expanded {
-        root_node.is_expanded = true;
-        self.state.visible_paths = file_utils::flatten_visible_tree(&self.state.file_tree, &self.state.root_path);
-      }
+    if let Some(root_node) = self.state.file_tree.get_mut(&self.state.root_path)
+      && root_node.is_directory
+      && !root_node.is_expanded
+    {
+      root_node.is_expanded = true;
+      self.state.visible_paths = file_utils::flatten_visible_tree(&self.state.file_tree, &self.state.root_path);
     }
   }
 
@@ -1075,6 +1098,10 @@ impl App {
     self.state.status_message = self.status_message.clone();
     self.state.is_processing = self.is_processing;
     self.state.token_count = self.token_count;
+    if self.state.dir_descendants_dirty {
+      self.state.dir_descendants_map = file_utils::build_directories_with_descendants_map(&self.state.file_tree);
+      self.state.dir_descendants_dirty = false;
+    }
   }
 
   /// Updates repomix background download and returns true if status changed.
@@ -1116,17 +1143,28 @@ impl App {
 
   /// Background task that processes token calculation requests.
   /// Runs independently from the main UI thread, uses shared cache with semaphore concurrency control.
-  async fn token_calculation_task(_token_counter: TokenCounter, mut request_receiver: mpsc::UnboundedReceiver<PathBuf>, result_sender: mpsc::UnboundedSender<(PathBuf, usize)>) {
+  async fn token_calculation_task(
+    _token_counter: TokenCounter,
+    mut request_receiver: mpsc::UnboundedReceiver<PathBuf>,
+    result_sender: mpsc::UnboundedSender<(PathBuf, usize)>,
+  ) {
     // create a shared cache that all TokenCounters will use
     let shared_cache = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+    let max_concurrency = std::thread::available_parallelism().map(|count| count.get()).unwrap_or(4).clamp(2, 8);
+    let semaphore = std::sync::Arc::new(Semaphore::new(max_concurrency));
 
     // process files as they come in, with controlled concurrency
     while let Some(file_path) = request_receiver.recv().await {
       let shared_cache = shared_cache.clone();
       let result_sender = result_sender.clone();
+      let permit = match semaphore.clone().acquire_owned().await {
+        Ok(permit) => permit,
+        Err(_) => break,
+      };
 
       // spawn a task for each file with semaphore concurrency control
       tokio::spawn(async move {
+        let _permit = permit;
         // create a TokenCounter that shares the cache
         let token_counter = TokenCounter::with_shared_cache(shared_cache);
 
@@ -1149,7 +1187,11 @@ impl App {
 
   /// Background task that handles backend execution requests.
   /// Runs independently from the main UI thread, supports immediate cancellation.
-  async fn backend_execution_task_lazy(_current_backend: Backend, mut request_receiver: mpsc::UnboundedReceiver<BackendRequest>, result_sender: mpsc::UnboundedSender<BackendResult>) {
+  async fn backend_execution_task_lazy(
+    _current_backend: Backend,
+    mut request_receiver: mpsc::UnboundedReceiver<BackendRequest>,
+    result_sender: mpsc::UnboundedSender<BackendResult>,
+  ) {
     // lazily initialize backends only when needed
     let mut yek_instance: Option<Arc<Yek>> = None;
     let mut repomix_instance: Option<Arc<Mutex<Repomix>>> = None;
@@ -1323,7 +1365,8 @@ impl App {
 pub fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
   enable_raw_mode().context("Error: failed to enable raw mode")?;
   let mut stdout = io::stdout();
-  execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture).context("Error: failed to enter alternate screen and enable mouse")?;
+  execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)
+    .context("Error: failed to enter alternate screen and enable mouse")?;
   let backend = CrosstermBackend::new(stdout);
   let terminal = Terminal::new(backend).context("Error: failed to create terminal")?;
   Ok(terminal)

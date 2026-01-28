@@ -1,8 +1,9 @@
-use crate::types::{Backend, OutputFormat};
+use std::{fs, path::PathBuf};
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
+
+use crate::types::{Backend, OutputFormat};
 
 /// Persistent configuration for siff user preferences.
 /// Stores settings that should persist between sessions.
@@ -41,10 +42,12 @@ impl SifConfig {
 
     if config_path.exists() {
       // load existing config
-      let config_content = fs::read_to_string(&config_path).with_context(|| format!("Error: failed to read config file: {}", config_path.display()))?;
+      let config_content = fs::read_to_string(&config_path)
+        .with_context(|| format!("Error: failed to read config file: {}", config_path.display()))?;
 
       // handle corrupted config file
-      let config: SifConfig = serde_json::from_str(&config_content).with_context(|| "Error: failed to parse config file")?;
+      let config: SifConfig =
+        serde_json::from_str(&config_content).with_context(|| "Error: failed to parse config file")?;
 
       Ok(config)
     } else {
@@ -61,19 +64,27 @@ impl SifConfig {
 
     // make sure config dir exists
     if let Some(parent) = config_path.parent() {
-      fs::create_dir_all(parent).with_context(|| format!("Error: failed to create config directory: {}", parent.display()))?;
+      fs::create_dir_all(parent)
+        .with_context(|| format!("Error: failed to create config directory: {}", parent.display()))?;
     }
 
     // serialize and write the config
     let config_content = serde_json::to_string_pretty(self).context("Error: failed to serialize config")?;
 
-    fs::write(&config_path, config_content).with_context(|| format!("Error: failed to write config file: {}", config_path.display()))?;
+    fs::write(&config_path, config_content)
+      .with_context(|| format!("Error: failed to write config file: {}", config_path.display()))?;
 
     Ok(())
   }
 
   /// Updates the config with new repomix options and saves.
-  pub fn update_repomix_options(&mut self, compress: bool, remove_comments: bool, include_file_tree: bool, output_format: OutputFormat) -> Result<()> {
+  pub fn update_repomix_options(
+    &mut self,
+    compress: bool,
+    remove_comments: bool,
+    include_file_tree: bool,
+    output_format: OutputFormat,
+  ) -> Result<()> {
     self.compress = compress;
     self.remove_comments = remove_comments;
     self.include_file_tree = include_file_tree;

@@ -1,17 +1,25 @@
-use crate::types::{AppState, FileNode};
+use std::{collections::HashMap, path::PathBuf};
+
 use ratatui::{
+  Frame,
   layout::{Constraint, Direction, Layout, Rect},
   style::{Color, Style},
   text::{Line, Span},
   widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-  Frame,
 };
-use std::collections::HashMap;
-use std::path::PathBuf;
+
+use crate::types::{AppState, FileNode};
 
 /// Renders the combined file tree and options component.
 /// which displays the configuration at top and file tree below.
-pub fn render_file_tree_with_options(terminal_frame: &mut Frame, terminal_frame_area: Rect, app_state: &AppState, file_tree_list_state: &mut ListState, token_count: usize, status_message: &str) {
+pub fn render_file_tree_with_options(
+  terminal_frame: &mut Frame,
+  terminal_frame_area: Rect,
+  app_state: &AppState,
+  file_tree_list_state: &mut ListState,
+  token_count: usize,
+  status_message: &str,
+) {
   match app_state.repomix_options.backend {
     crate::types::Backend::Repomix => {
       // for repomix backend, show both config and file tree
@@ -29,11 +37,25 @@ pub fn render_file_tree_with_options(terminal_frame: &mut Frame, terminal_frame_
       render_configuration_section(terminal_frame, chunks[0], app_state);
 
       // render file tree section with hints and status
-      render_file_tree_section_with_hints(terminal_frame, chunks[1], app_state, file_tree_list_state, token_count, status_message);
+      render_file_tree_section_with_hints(
+        terminal_frame,
+        chunks[1],
+        app_state,
+        file_tree_list_state,
+        token_count,
+        status_message,
+      );
     }
     crate::types::Backend::Yek => {
       // for yek backend, show only file tree
-      render_file_tree_section_with_hints(terminal_frame, terminal_frame_area, app_state, file_tree_list_state, token_count, status_message);
+      render_file_tree_section_with_hints(
+        terminal_frame,
+        terminal_frame_area,
+        app_state,
+        file_tree_list_state,
+        token_count,
+        status_message,
+      );
     }
   }
 }
@@ -76,13 +98,21 @@ fn render_configuration_section(frame: &mut Frame, area: Rect, app_state: &AppSt
   let config_block = Block::default().borders(Borders::ALL).title("Configuration").style(config_style);
 
   // create options paragraph
-  let options_paragraph = Paragraph::new(Line::from(options_content)).block(config_block).style(Style::default().fg(Color::White));
+  let options_paragraph =
+    Paragraph::new(Line::from(options_content)).block(config_block).style(Style::default().fg(Color::White));
 
   frame.render_widget(options_paragraph, area);
 }
 
 /// Renders file tree section with hints and status.
-fn render_file_tree_section_with_hints(terminal_frame: &mut Frame, terminal_frame_area: Rect, app_state: &AppState, file_tree_list_state: &mut ListState, token_count: usize, status_message: &str) {
+fn render_file_tree_section_with_hints(
+  terminal_frame: &mut Frame,
+  terminal_frame_area: Rect,
+  app_state: &AppState,
+  file_tree_list_state: &mut ListState,
+  token_count: usize,
+  status_message: &str,
+) {
   // get selected count
   let selected_count = app_state.file_tree.values().filter(|node| node.is_selected && !node.is_directory).count();
 
@@ -142,7 +172,8 @@ fn render_file_tree_section_with_hints(terminal_frame: &mut Frame, terminal_fram
 
   // render token count in top-right with right alignment
   let token_text = format!("Tokens: {}", crate::token_counter::format_token_count(token_count));
-  let token_paragraph = Paragraph::new(token_text).style(Style::default().fg(Color::Yellow)).alignment(ratatui::layout::Alignment::Right);
+  let token_paragraph =
+    Paragraph::new(token_text).style(Style::default().fg(Color::Yellow)).alignment(ratatui::layout::Alignment::Right);
   terminal_frame.render_widget(token_paragraph, top_chunks[1]);
 
   // render the file list
@@ -175,45 +206,27 @@ fn render_file_tree_section_with_hints(terminal_frame: &mut Frame, terminal_fram
 
   // render nav hints at bottom
   let hints_text = match app_state.repomix_options.backend {
-    crate::types::Backend::Repomix => "↑/↓ navigate • ←/→ collapse/expand dirs • Space select files • E expand all • C collapse all • A select all • U unselect all • r run • q quit",
-    crate::types::Backend::Yek => "↑/↓ navigate • ←/→ collapse/expand dirs • Space select files • E expand all • C collapse all • A select all • U unselect all • r run • q quit",
+    crate::types::Backend::Repomix => {
+      "↑/↓ navigate • ←/→ collapse/expand dirs • Space select files • E expand all • C collapse all • A select all • U unselect all • r run • q quit"
+    }
+    crate::types::Backend::Yek => {
+      "↑/↓ navigate • ←/→ collapse/expand dirs • Space select files • E expand all • C collapse all • A select all • U unselect all • r run • q quit"
+    }
   };
   let hints_paragraph = Paragraph::new(hints_text).style(Style::default().fg(Color::Yellow));
 
   terminal_frame.render_widget(hints_paragraph, inner_chunks[hints_index]);
 }
 
-/// Builds a map of directories that have selected descendants.
-fn build_directories_with_descendants_map(file_tree: &HashMap<PathBuf, FileNode>) -> HashMap<PathBuf, bool> {
-  let mut dir_map = HashMap::new();
-
-  // initialize all directories as false
-  for (path, node) in file_tree {
-    if node.is_directory {
-      dir_map.insert(path.clone(), false);
-    }
-  }
-
-  // mark directories that have selected descendants
-  for (path, node) in file_tree {
-    if node.is_selected {
-      // mark all parent directories as having selected descendants
-      let mut current_path = path.parent();
-      while let Some(parent_path) = current_path {
-        if let Some(has_descendants) = dir_map.get_mut(parent_path) {
-          *has_descendants = true;
-        }
-        current_path = parent_path.parent();
-      }
-    }
-  }
-
-  dir_map
-}
-
 /// Creates a formatted list item for a single file or directory.
 /// Handles indentation, icons, selection indicators, and token counts with color coding.
-fn create_list_item(path: &PathBuf, file_tree: &HashMap<PathBuf, FileNode>, individual_token_counts: &HashMap<PathBuf, Option<usize>>, dir_descendants_map: &HashMap<PathBuf, bool>, is_highlighted: bool) -> ListItem<'static> {
+fn create_list_item(
+  path: &PathBuf,
+  file_tree: &HashMap<PathBuf, FileNode>,
+  individual_token_counts: &HashMap<PathBuf, Option<usize>>,
+  dir_descendants_map: &HashMap<PathBuf, bool>,
+  is_highlighted: bool,
+) -> ListItem<'static> {
   // get node from file tree
   let node = file_tree.get(path).unwrap();
 
@@ -271,18 +284,16 @@ fn create_list_item(path: &PathBuf, file_tree: &HashMap<PathBuf, FileNode>, indi
   let mut spans = vec![Span::styled(main_text, base_style)];
 
   // add token count display, only show actual counts
-  if should_show_tokens {
-    if let Some(token_count) = token_count_opt {
-      // show actual token count (even if 0)
-      let token_color = if is_highlighted {
-        // when highlighted, use light blue for token counts contrast
-        Color::LightBlue
-      } else {
-        get_token_count_color(token_count)
-      };
-      let token_text = format!(" ({})", crate::token_counter::format_token_count(token_count));
-      spans.push(Span::styled(token_text, Style::default().fg(token_color)));
-    }
+  if should_show_tokens && let Some(token_count) = token_count_opt {
+    // show actual token count (even if 0)
+    let token_color = if is_highlighted {
+      // when highlighted, use light blue for token counts contrast
+      Color::LightBlue
+    } else {
+      get_token_count_color(token_count)
+    };
+    let token_text = format!(" ({})", crate::token_counter::format_token_count(token_count));
+    spans.push(Span::styled(token_text, Style::default().fg(token_color)));
   }
 
   ListItem::new(Line::from(spans))
@@ -341,26 +352,26 @@ pub fn handle_file_tree_input(app_state: &mut AppState, key: crossterm::event::K
     // expansion/collapse (h/l and left/right arrows)
     KeyCode::Char('h') | KeyCode::Left => {
       // collapse directory
-      if let Some(selected_path) = app_state.visible_paths.get(app_state.selected_index) {
-        if let Some(node) = app_state.file_tree.get_mut(selected_path) {
-          if node.is_directory && node.is_expanded {
-            node.toggle_expansion();
-            update_visible_files(app_state);
-          }
-        }
+      if let Some(selected_path) = app_state.visible_paths.get(app_state.selected_index)
+        && let Some(node) = app_state.file_tree.get_mut(selected_path)
+        && node.is_directory
+        && node.is_expanded
+      {
+        node.toggle_expansion();
+        update_visible_files(app_state);
       }
       true
     }
 
     KeyCode::Char('l') | KeyCode::Right => {
       // expand directory
-      if let Some(selected_path) = app_state.visible_paths.get(app_state.selected_index) {
-        if let Some(node) = app_state.file_tree.get_mut(selected_path) {
-          if node.is_directory && !node.is_expanded {
-            node.toggle_expansion();
-            update_visible_files(app_state);
-          }
-        }
+      if let Some(selected_path) = app_state.visible_paths.get(app_state.selected_index)
+        && let Some(node) = app_state.file_tree.get_mut(selected_path)
+        && node.is_directory
+        && !node.is_expanded
+      {
+        node.toggle_expansion();
+        update_visible_files(app_state);
       }
       true
     }
@@ -399,8 +410,7 @@ fn update_visible_files(app_state: &mut AppState) {
 
 /// Renders the file list without borders (for use inside other blocks).
 fn render_file_list_inner(frame: &mut Frame, area: Rect, app_state: &AppState, list_state: &mut ListState) {
-  // build map of directories with selected descendants
-  let dir_descendants_map = build_directories_with_descendants_map(&app_state.file_tree);
+  let dir_descendants_map = &app_state.dir_descendants_map;
 
   // get the currently highlighted index
   let highlighted_index = if !app_state.visible_paths.is_empty() {
@@ -416,7 +426,13 @@ fn render_file_list_inner(frame: &mut Frame, area: Rect, app_state: &AppState, l
     .enumerate()
     .map(|(index, path)| {
       let is_highlighted = highlighted_index == Some(index);
-      create_list_item(path, &app_state.file_tree, &app_state.individual_token_counts, &dir_descendants_map, is_highlighted)
+      create_list_item(
+        path,
+        &app_state.file_tree,
+        &app_state.individual_token_counts,
+        dir_descendants_map,
+        is_highlighted,
+      )
     })
     .collect();
 

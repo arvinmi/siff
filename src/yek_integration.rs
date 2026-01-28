@@ -1,5 +1,6 @@
-use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
 use tokio::process::Command;
 
 /// Yek integration module with runtime download.
@@ -89,7 +90,10 @@ impl Yek {
 
     // check for extremely large file counts
     if selected_files.len() > 10000 {
-      return Err(anyhow::anyhow!("Error: Too many files selected ({}). Yek may fail with large file counts. Please select fewer files.", selected_files.len()));
+      return Err(anyhow::anyhow!(
+        "Error: Too many files selected ({}). Yek may fail with large file counts. Please select fewer files.",
+        selected_files.len()
+      ));
     }
 
     // build yek command arguments
@@ -97,32 +101,9 @@ impl Yek {
 
     // add selected files as arguments
     for file_path in selected_files {
-      // validate that the file path is within the root directory
-      let relative_path = match file_path.strip_prefix(root_path) {
-        Ok(rel_path) => rel_path,
-        Err(_) => {
-          // skip files outside root directory
-          eprintln!("Warning: Skipping file outside root directory: {}", file_path.display());
-          continue;
-        }
-      };
-
-      // convert to string
-      let path_str = relative_path.to_string_lossy();
-
-      // skip paths that try to escape the root directory
-      if path_str.contains("..") {
-        eprintln!("Warning: Skipping file with path traversal attempt: {}", path_str);
-        continue;
+      if let Some(path_str) = crate::file_utils::validate_file_path(file_path, root_path) {
+        yek_args.push(path_str);
       }
-
-      // skip empty or dangerous paths
-      if path_str.is_empty() || path_str.starts_with('-') {
-        eprintln!("Warning: Skipping file with invalid path: {}", path_str);
-        continue;
-      }
-
-      yek_args.push(path_str.to_string());
     }
 
     // make sure have files to process after validation
@@ -136,7 +117,12 @@ impl Yek {
     }
 
     // execute yek with the selected files
-    let output = Command::new(&self.yek_binary_path).args(&yek_args).current_dir(root_path).output().await.context("Failed to execute yek binary")?;
+    let output = Command::new(&self.yek_binary_path)
+      .args(&yek_args)
+      .current_dir(root_path)
+      .output()
+      .await
+      .context("Failed to execute yek binary")?;
 
     if output.status.success() {
       let content = String::from_utf8_lossy(&output.stdout);
@@ -147,62 +133,9 @@ impl Yek {
     }
   }
 
-  /// Copies content to clipboard using platform specific commands.
+  /// Copies content to clipboard using shared clipboard utility.
   pub async fn copy_to_clipboard(&self, content: &str) -> Result<String> {
-    use tokio::process::Command;
-
-    // determine the clipboard command based on the platform
-    let clipboard_cmd = if cfg!(target_os = "macos") {
-      vec!["pbcopy"]
-    } else if cfg!(target_os = "linux") {
-      // try xclip first, then xsel as fallback
-      if Command::new("which").arg("xclip").output().await.is_ok() {
-        vec!["xclip", "-selection", "clipboard"]
-      } else if Command::new("which").arg("xsel").output().await.is_ok() {
-        vec!["xsel", "--clipboard", "--input"]
-      } else {
-        return Err(anyhow::anyhow!(
-          "No clipboard utility found. Please install xclip or xsel:\n\
-                     sudo apt-get install xclip  # or\n\
-                     sudo apt-get install xsel"
-        ));
-      }
-    } else if cfg!(target_os = "windows") {
-      vec!["clip"]
-    } else {
-      return Err(anyhow::anyhow!("Unsupported platform for clipboard operations"));
-    };
-
-    // execute clipboard command
-    let mut cmd = Command::new(clipboard_cmd[0]);
-    for arg in &clipboard_cmd[1..] {
-      cmd.arg(arg);
-    }
-
-    let mut child = cmd
-      .stdin(std::process::Stdio::piped())
-      .stdout(std::process::Stdio::piped())
-      .stderr(std::process::Stdio::piped())
-      .spawn()
-      .context("Failed to spawn clipboard command")?;
-
-    // write content to stdin
-    if let Some(stdin) = child.stdin.take() {
-      use tokio::io::AsyncWriteExt;
-      let mut stdin = stdin;
-      stdin.write_all(content.as_bytes()).await.context("Failed to write to clipboard command stdin")?;
-      stdin.shutdown().await.context("Failed to close clipboard command stdin")?;
-    }
-
-    // wait for command to complete
-    let output = child.wait_with_output().await.context("Failed to wait for clipboard command")?;
-
-    if output.status.success() {
-      Ok("Content copied to clipboard".to_string())
-    } else {
-      let stderr = String::from_utf8_lossy(&output.stderr);
-      Err(anyhow::anyhow!("Clipboard command failed: {}", stderr))
-    }
+    crate::clipboard::copy_to_clipboard(content).await
   }
 
   /// Processes files and copies to clipboard in one operation.
