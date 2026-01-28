@@ -48,7 +48,7 @@ impl Yek {
 
     // install yek to temporary directory
     let output = StdCommand::new("cargo")
-      .args(["install", "yek", "--root", temp_dir.path().to_str().unwrap(), "--quiet"])
+      .args(["install", "yek", "--locked", "--root", temp_dir.path().to_str().unwrap(), "--quiet"])
       .output()
       .context("Failed to execute cargo install yek")?;
 

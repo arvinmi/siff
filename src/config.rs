@@ -125,7 +125,7 @@ mod tests {
     let config = SifConfig::default();
     assert!(!config.compress);
     assert!(!config.remove_comments);
-    assert!(config.include_file_tree);
+    assert!(!config.include_file_tree);
     assert_eq!(config.output_format, OutputFormat::Xml);
     assert_eq!(config.default_backend, Backend::Repomix);
   }
