@@ -17,7 +17,7 @@ use clap::Parser;
 #[derive(Parser)]
 #[command(name = "siff")]
 #[command(about = "File browser with repomix and yek as supported parsing backends")]
-#[command(version = "0.1.1")]
+#[command(version)]
 #[command(long_about = None)]
 struct Cli {
   /// Directory to scan for files (defaults to current dir)
